@@ -22,6 +22,186 @@ public interface ICommand
     void Execute();
 }
 
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+public class ServerThread
+{
+    private Thread thread;
+    private ConcurrentQueue<ICommand> concurrentQueue;
+    private volatile bool isRunning;
+    private volatile bool SoftStopRequested;
+
+    private void Running()
+    {
+        while (isRunning)
+        {
+            if (concurrentQueue.TryDequeue(out ICommand commanda))
+            {
+                try
+                {
+                    commanda.Execute();
+                }
+                catch (Exception exception)
+                {
+                    Console.WriteLine($"❗️ Исключение  {exception.Message} ");
+                }
+            }
+
+            if (SoftStopRequested && concurrentQueue.IsEmpty)
+            {
+                isRunning = false;
+            }
+        }
+    }
+
+    public ServerThread()
+    {
+        concurrentQueue = new ConcurrentQueue<ICommand>();
+        thread = new Thread(Running) { 
+            IsBackground = true 
+        };
+        
+        isRunning = true;
+    }
+
+    public void EnqueueCommand(ICommand commanda)
+    {
+        if (isRunning)
+        {
+            concurrentQueue.Enqueue(commanda);
+        }
+    }
+
+    public void RequestSoftStop()
+    {
+        SoftStopRequested = true;
+    }
+
+    public void HardStop()
+    {
+        isRunning = false;
+    }
+    public void Start()
+    {
+        thread.Start();
+    }
+
+    public void Stop()
+    {
+        isRunning = false;
+        thread.Join();
+    }
+
+    public bool IsRunning => isRunning;
+
+    public Thread GetThread() => thread;
+}
+
+#!csharp
+
+public class HardStopCommanda : ICommand
+{
+    private readonly ServerThread serverThread;
+
+    public HardStopCommanda(ServerThread serverThread)
+    {
+        this.serverThread = serverThread;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread == serverThread.GetThread())
+        {
+            serverThread.HardStop();
+        }
+        else
+        {
+            throw new InvalidOperationException("➡️ HardStopCommanda выполняется только в потоке сервера ");
+        }
+    }
+}
+
+#!csharp
+
+public class SoftStopCommanda : ICommand
+{
+    private readonly ServerThread serverThread;
+
+    public SoftStopCommanda(ServerThread serverThread)
+    {
+        this.serverThread = serverThread;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread == serverThread.GetThread())
+        {
+            serverThread.RequestSoftStop();
+        }
+        else
+        {
+            throw new InvalidOperationException("➡️ SoftStopCommanda выполняется только в потоке сервера ");
+        }
+    }
+}
+
+#!csharp
+
+var serverThread = new ServerThread();
+
+serverThread.Start();
+serverThread.EnqueueCommand(new SoftStopCommanda(serverThread));
+serverThread.EnqueueCommand(new HardStopCommanda(serverThread));
+
+serverThread.Stop();
+
+Console.WriteLine($"Серверный поток выполняется❓");
+if (Convert.ToString(serverThread.IsRunning) == "true"){
+    Console.WriteLine("✅ да, выполняется");
+}
+else{
+    
+    Console.WriteLine("❌ нет, не выполняется");
+}
+
+try
+{
+    var oThread = new Thread(() =>
+    {
+        var hardStopCommanda = new HardStopCommanda(serverThread);
+        var softStopCommanda = new SoftStopCommanda(serverThread);
+        
+        try
+        {
+            hardStopCommanda.Execute();
+        }
+        catch (InvalidOperationException exception)
+        {
+            Console.WriteLine($"Ожидаемое исключение ❗️ {exception.Message}");
+        }
+
+        try
+        {
+            softStopCommanda.Execute();
+        }
+        catch (InvalidOperationException exception)
+        {
+            Console.WriteLine($"Ожидаемое исключение ❗️ {exception.Message}");
+        }
+    });
+
+    oThread.Start();
+    oThread.Join();
+}
+catch (Exception exception)
+{
+    Console.WriteLine($"Непредвиденное исключение ❗️ {exception.Message}");
+}
+
 #!markdown
 
 Классы, наследующие интерйес ICommand будем называть **Командами.**
