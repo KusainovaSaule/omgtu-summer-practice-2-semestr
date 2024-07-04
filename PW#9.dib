@@ -20,7 +20,7 @@
 
 #!csharp
 
-interface ICommand
+public interface ICommand
 {
     void Execute();
 }
@@ -35,6 +35,209 @@ public class TestCommand(int id) : ICommand
         Console.WriteLine($"Поток {id} вызов {++counter}");
     }
 }
+
+#!csharp
+
+public interface IScheduler 
+{ 
+    bool HasCommand(); 
+    ICommand Select(); 
+    void Add(ICommand cmd); 
+}
+
+#!csharp
+
+using System; 
+using System.Collections.Concurrent; 
+using System.Threading; 
+ 
+public class RoundRobinScheduler : IScheduler 
+{ 
+    private Dictionary<ICommand, int> Times = new Dictionary<ICommand, int>(); 
+ 
+    private readonly Queue<ICommand> scheduledCommanda = new Queue<ICommand>(); 
+ 
+    public bool HasCommand() => scheduledCommanda.Count > 0; 
+ 
+    public ICommand Select() 
+    { 
+        if (scheduledCommanda.Count == 0) { 
+            throw new InvalidOperationException("❌нет доступных команд "); 
+        } 
+        var cmd = scheduledCommanda.Dequeue(); 
+        if (!Times.ContainsKey(cmd)) {  
+            Times.Add(cmd, 0);  
+        } 
+        Times[cmd]++; 
+        if (Times[cmd] < 3) {  
+            scheduledCommanda.Enqueue(cmd);  
+        } 
+        return cmd; 
+    } 
+ 
+    public void Add(ICommand cmd) => scheduledCommanda.Enqueue(cmd); 
+}
+
+#!csharp
+
+public class ServerThread 
+{ 
+    private Thread thread; 
+    private IScheduler scheduler; 
+    private ConcurrentQueue<ICommand> concurrentQueue; 
+    private volatile bool isRunning; 
+    private volatile bool SoftStopRequested; 
+ 
+    private void Running(){ 
+        while (isRunning) 
+        { 
+            if (concurrentQueue.TryDequeue(out ICommand commanda)) 
+            { 
+                scheduler.Add(commanda); 
+            } 
+ 
+            if (scheduler.HasCommand()) 
+            { 
+                try 
+                { 
+                    var sledCommand = scheduler.Select(); 
+                    sledCommand.Execute(); 
+                } 
+                catch (Exception exception) 
+                { 
+                    Console.WriteLine($"❗️ Исключение  {exception.Message}"); 
+                } 
+            } 
+            else 
+            { 
+                Thread.Sleep(10); 
+            } 
+ 
+            if (SoftStopRequested && concurrentQueue.IsEmpty && (!scheduler.HasCommand())) 
+            { 
+                isRunning = false; 
+            } 
+        } 
+    } 
+ 
+    public ServerThread(IScheduler scheduler) 
+    { 
+        concurrentQueue = new ConcurrentQueue<ICommand>(); 
+        this.scheduler = scheduler; 
+        thread = new Thread(Running) {  
+            IsBackground = true  
+        }; 
+        isRunning = true; 
+    } 
+ 
+    public void Start() {  
+        thread.Start();  
+    } 
+ 
+    public void Stop() {  
+        isRunning = false; thread.Join();  
+    } 
+ 
+    public void EnqueueCommand(ICommand commanda) 
+    { 
+        if (isRunning) {  
+            concurrentQueue.Enqueue(commanda);  
+        } 
+    } 
+ 
+    public void RequestSoftStop() {  
+        SoftStopRequested = true;  
+    } 
+ 
+    public void HardStop() {  
+        isRunning = false;  
+    } 
+ 
+    public bool IsRunning => isRunning; 
+ 
+    public Thread GetThread() => thread; 
+}
+
+#!csharp
+
+public class HardStopCommanda : ICommand 
+{ 
+    private readonly ServerThread serverThread; 
+ 
+    public HardStopCommanda(ServerThread serverThread) 
+    { 
+        this.serverThread = serverThread; 
+    } 
+ 
+    public void Execute() 
+    { 
+        if (Thread.CurrentThread == serverThread.GetThread()) 
+        { 
+            serverThread.HardStop(); 
+        } 
+        else 
+        { 
+            throw new InvalidOperationException("➡️ HardStopCommanda выполняется только в потоке сервера "); 
+        } 
+    } 
+}
+
+#!csharp
+
+public class SoftStopCommanda : ICommand 
+{ 
+    private readonly ServerThread serverThread; 
+ 
+    public SoftStopCommanda(ServerThread serverThread) 
+    { 
+        this.serverThread = serverThread; 
+    } 
+ 
+    public void Execute() 
+    { 
+        if (Thread.CurrentThread == serverThread.GetThread()) 
+        { 
+            serverThread.RequestSoftStop(); 
+        } 
+        else 
+        { 
+            throw new InvalidOperationException("➡️ SoftStopCommanda выполняется только в потоке сервера "); 
+        } 
+    } 
+}
+
+#!csharp
+
+ServerThread serverThread = new ServerThread(new RoundRobinScheduler()); 
+ 
+serverThread.Start(); 
+ 
+for (int i = 1; i <= 5; i++) 
+{ 
+    serverThread.EnqueueCommand(new TestCommand(i)); 
+} 
+ 
+Thread.Sleep(1000); 
+ 
+serverThread.EnqueueCommand(new HardStopCommanda(serverThread));
+
+#!csharp
+
+//Поток 1 вызов 1 
+//Поток 1 вызов 2 
+//Поток 2 вызов 1 
+//Поток 1 вызов 3 
+//Поток 3 вызов 1 
+//Поток 2 вызов 2 
+//Поток 4 вызов 1 
+//Поток 5 вызов 1 
+//Поток 3 вызов 2 
+//Поток 2 вызов 3 
+//Поток 4 вызов 2 
+//Поток 5 вызов 2 
+//Поток 3 вызов 3 
+//Поток 4 вызов 3 
+//Поток 5 вызов 3
 
 #!markdown
 
