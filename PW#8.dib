@@ -35,11 +35,169 @@
 
 #!csharp
 
+using System; 
+using System.Collections.Concurrent; 
+using System.Threading; 
+  
+
+public interface ICommand 
+{ 
+    void Execute(); 
+}
+
 public interface IScheduler
 {
-    bool HasCommand()
+    bool HasCommand();
     ICommand Select();
     void Add(ICommand cmd);
+} 
+
+public class RoundRobinScheduler : IScheduler 
+{ 
+    private readonly Queue<ICommand> scheduledCommanda = new Queue<ICommand>(); 
+ 
+    public bool HasCommand() => scheduledCommanda.Count > 0; 
+ 
+    public ICommand Select() 
+    { 
+        if (scheduledCommanda.Count == 0){ 
+            throw new InvalidOperationException("❌нет доступных команд "); 
+        }  
+        var cmd = scheduledCommanda.Dequeue(); 
+        scheduledCommanda.Enqueue(cmd); 
+        return cmd; 
+    } 
+ 
+    public void Add(ICommand cmd) => scheduledCommanda.Enqueue(cmd); 
+}
+
+#!csharp
+
+public class HardStopCommanda : ICommand 
+{ 
+    private readonly ServerThread serverThread; 
+ 
+    public HardStopCommanda(ServerThread serverThread) 
+    { 
+        this.serverThread = serverThread; 
+    } 
+ 
+    public void Execute() 
+    { 
+        if (Thread.CurrentThread == serverThread.GetThread()) 
+        { 
+            serverThread.HardStop(); 
+        } 
+        else 
+        { 
+            throw new InvalidOperationException("➡️ HardStopCommanda выполняется только в потоке сервера "); 
+        } 
+    } 
+}
+
+#!csharp
+
+public class SoftStopCommanda : ICommand 
+{ 
+    private readonly ServerThread serverThread; 
+ 
+    public SoftStopCommanda(ServerThread serverThread) 
+    { 
+        this.serverThread = serverThread; 
+    } 
+ 
+    public void Execute() 
+    { 
+        if (Thread.CurrentThread == serverThread.GetThread()) 
+        { 
+            serverThread.RequestSoftStop(); 
+        } 
+        else 
+        { 
+            throw new InvalidOperationException("➡️ SoftStopCommanda выполняется только в потоке сервера "); 
+        } 
+    } 
+}
+
+#!csharp
+
+public class ServerThread 
+{ 
+    private IScheduler scheduler; 
+    private Thread thread; 
+    private ConcurrentQueue<ICommand> concurrentQueue; 
+    private volatile bool isRunning; 
+    private volatile bool SoftStopRequested; 
+ 
+    private void Running() 
+    { 
+        while (isRunning) 
+        { 
+            if (concurrentQueue.TryDequeue(out ICommand commanda)) 
+            { 
+                scheduler.Add(commanda); 
+            } 
+            if (scheduler.HasCommand()) 
+            { 
+                try 
+                { 
+                    var sledcommanda = scheduler.Select(); 
+                    sledcommanda.Execute(); 
+                } 
+                catch (Exception exception) 
+                { 
+                    Console.WriteLine($"❗️ Исключение  {exception.Message}"); 
+                } 
+            } 
+            else 
+            { 
+                Thread.Sleep(10); 
+            } 
+ 
+            if (SoftStopRequested && concurrentQueue.IsEmpty && (!scheduler.HasCommand())) 
+            { 
+                isRunning = false; 
+            } 
+        } 
+    } 
+ 
+    public ServerThread(IScheduler scheduler) 
+    { 
+        concurrentQueue = new ConcurrentQueue<ICommand>(); 
+        this.scheduler = scheduler; 
+        thread = new Thread(Running) {  
+            IsBackground = true  
+        }; 
+        isRunning = true; 
+    } 
+ 
+    public void EnqueueCommanda(ICommand commanda) 
+    { 
+        if (isRunning) {  
+            concurrentQueue.Enqueue(commanda);  
+        } 
+    } 
+ 
+    public void RequestSoftStop() {  
+        SoftStopRequested = true; 
+    } 
+ 
+    public void HardStop() {  
+        isRunning = false;  
+    } 
+     
+    public void Start() {  
+        thread.Start();  
+    } 
+ 
+    public void Stop() {  
+        isRunning = false;  
+        thread.Join();  
+    } 
+ 
+    public bool IsRunning => isRunning; 
+ 
+    public Thread GetThread() => thread; 
 }
 
 #!markdown
