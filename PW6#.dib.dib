@@ -1,0 +1,129 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"name":"csharp"}]}}
+
+#!csharp
+
+#r "nuget: ScottPlot, 4.1.29" 
+using System; 
+using System.Collections.Concurrent; 
+using System.Collections.Generic; 
+using System.Diagnostics; 
+using System.Threading; 
+using Microsoft.DotNet.Interactive.Formatting; 
+using ScottPlot; 
+
+static void AddItem(BlockingCollection<object> collection)  
+{ 
+    Monitor.Enter(collection); 
+    if (itemsAdded < Math.Pow(10,6)) { 
+        collection.Add(new object()); 
+        Interlocked.Increment(ref itemsAdded); 
+    } 
+    if ((itemsAdded == Math.Pow(10,6)) && (collection.Count() == 0)) { 
+        collection.CompleteAdding(); 
+    } 
+    Monitor.Exit(collection); 
+} 
+
+static void RemoveItem(BlockingCollection<object> collection) { 
+    Monitor.Enter(collection); 
+    if (collection.Count >= 1) { 
+        collection.Take(); 
+    } 
+    Monitor.Exit(collection); 
+} 
+
+
+static int itemsAdded = 0;  
+long[] blockingCollectionTimes = new long[10]; 
+BlockingCollection<object> blockingCollection;  
+Thread producerThread, consumerThread; 
+AutoResetEvent[] resetEvents; 
+Stopwatch stopwatch; 
+
+for (int i = 0; i < 10; i++) { 
+    itemsAdded = 0; 
+    blockingCollection = new BlockingCollection<object>(); 
+    resetEvents = new AutoResetEvent[]{new AutoResetEvent(false), new AutoResetEvent(false)}; 
+
+    producerThread = new Thread(() => { while (!blockingCollection.IsAddingCompleted) { AddItem(blockingCollection); } resetEvents[0].Set(); }); 
+    consumerThread = new Thread(() => { while (!blockingCollection.IsAddingCompleted) { RemoveItem(blockingCollection); } resetEvents[1].Set(); }); 
+
+    stopwatch = Stopwatch.StartNew(); 
+    producerThread.Start(); 
+    consumerThread.Start(); 
+    WaitHandle.WaitAll(new WaitHandle[] { resetEvents[0], resetEvents[1] }); 
+
+    stopwatch.Stop(); 
+    blockingCollectionTimes[i] = stopwatch.ElapsedMilliseconds; 
+}
+
+#!csharp
+
+double[] concurrentQueueTimes = new double[10]; 
+ConcurrentQueue<object> concurrentQueue = new ConcurrentQueue<object>(); 
+static object dummyObject = new object(); 
+
+for (int i = 0; i < 10; i++) { 
+    itemsAdded = 0; 
+    resetEvents = new AutoResetEvent[]{new AutoResetEvent(false), new AutoResetEvent(false)}; 
+
+    producerThread = new Thread(() => { while (itemsAdded < Math.Pow(10,6)) {  
+        concurrentQueue.Enqueue(new object()); Interlocked.Increment(ref itemsAdded); } resetEvents[0].Set(); }); 
+    consumerThread = new Thread(() => { while (!(itemsAdded == Math.Pow(10,6)) || !(concurrentQueue.Count == 0)) {  
+        concurrentQueue.TryDequeue(out dummyObject); } resetEvents[1].Set(); }); 
+
+    stopwatch = Stopwatch.StartNew(); 
+    producerThread.Start(); 
+    consumerThread.Start();  
+
+    WaitHandle.WaitAll(new WaitHandle[] { resetEvents[0], resetEvents[1] }); 
+
+    stopwatch.Stop(); 
+    concurrentQueueTimes[i] = stopwatch.ElapsedMilliseconds; 
+}
+
+#!csharp
+
+double[] queueTimes = new double[10]; 
+Queue<object> queue = new Queue<object>(); 
+
+for (int i = 0; i < 10; i++) { 
+    itemsAdded = 0; 
+    stopwatch = Stopwatch.StartNew(); 
+    for (int j = 0; j < Math.Pow(10,6); j++) { queue.Enqueue(new object()); } 
+    for (int j = 0; j < Math.Pow(10,6); j++) { queue.Dequeue(); } 
+    stopwatch.Stop(); 
+    queueTimes[i] = stopwatch.ElapsedMilliseconds; 
+}
+
+#!csharp
+
+double[] blockingCollectionTimesDouble = Array.ConvertAll(blockingCollectionTimes, x => (double)x);
+var plot = new ScottPlot.Plot(700, 500);
+plot.AddScatter(Enumerable.Range(1, 10).Select(x => x * 1.0).ToArray(), blockingCollectionTimesDouble); 
+plot.AddScatter(Enumerable.Range(1, 10).Select(x => x * 1.0).ToArray(), concurrentQueueTimes); 
+plot.AddScatter(Enumerable.Range(1, 10).Select(x => x * 1.0).ToArray(), queueTimes); 
+plot.SaveFig("graf6.png");
+// голубой цвет BlockingCollection💙
+// зеленый цвет Queue💚
+// оранжевый цвет ConcurrentQueue🔶
+
+#!csharp
+
+$"BlockingCollection ▶️ {blockingCollectionTimes.Sum() / 10} миллисекунд🕒\n" + 
+$"ConcurrentQueue ▶️ {concurrentQueueTimes.Sum() / 10} миллисекунд🕒\n" + 
+$"Queue ▶️ {queueTimes.Sum() / 10} миллисекунд🕒\n" +  
+$"Скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очередью = {100.0 * queueTimes.Sum() / Math.Min(blockingCollectionTimes.Sum(), concurrentQueueTimes.Sum()) - 100:F2}%"
+
+#!csharp
+
+//BlockingCollection ▶️ 924 миллисекунд🕒
+//ConcurrentQueue ▶️ 219.4 миллисекунд🕒
+//Queue ▶️ 267.3 миллисекунд🕒
+//Скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очередью = 21.83%
+
+
+//В результате проделанной работы можно увидеть, что самая быстрая потоко-безопсная коллекция - ConcurrentQueue. 
+//По сравнению с обычной очередью Queue имеет преимущество в скорости ~ 21.83%
